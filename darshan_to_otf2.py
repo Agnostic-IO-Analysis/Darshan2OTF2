@@ -66,7 +66,8 @@ def write_oft2_trace(fp_output, timer_res, stats):
             events = rank_stats["read_events"] + rank_stats["write_events"]
             events.sort(key=lambda x: x.start_time)
 
-            writer = trace.event_writer(f"rank {rank_id}", group=location_groups.get(f"rank {rank_id}"))
+            #writer = trace.event_writer(f"Master Thread", group=locations.get(f"rank {rank_id}"))
+            writer = trace.event_writer_from_location(locations.get(f"rank {rank_id}"))
 
             for event in events:
                 io_mode = otf2.IoOperationMode.WRITE if event.action == "write" else otf2.IoOperationMode.READ
