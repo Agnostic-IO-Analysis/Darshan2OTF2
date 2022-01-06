@@ -1,134 +1,93 @@
 import otf2
-import darshan
 import argparse
 import subprocess
 import os
-from event import Event
+from util import gather_stats_from_darshan
 
 
-def write_definitions(fp_output, timer_res, report):
+def write_oft2_trace(fp_output, timer_res, stats):
 
     with otf2.writer.open(fp_output, timer_resolution=timer_res) as trace:
 
-        root_node = trace.definitions.system_tree_node("root node")
-        system_tree_node = trace.definitions.system_tree_node("myHost", parent=root_node)
+        root_node = trace.definitions.system_tree_node(stats["job"]["root_node"])
+        system_tree_nodes = {name: trace.definitions.system_tree_node(name, parent=root_node) for name in stats["hostnames"]}
+        paradigms = {}
 
-        # define paradigms
+        if "posix" in stats["paradigms"]:
+            paradigms["posix"] = trace.definitions.io_paradigm(identification="POSIX",
+                                                               name="POSIX I/O",
+                                                               io_paradigm_class=otf2.IoParadigmClass.SERIAL,
+                                                               io_paradigm_flags=otf2.IoParadigmFlag.NONE)
 
-        paradigm_posix = trace.definitions.io_paradigm(identification="POSIX",
-                                                       name="POSIX I/O",
-                                                       io_paradigm_class=otf2.IoParadigmClass.SERIAL,
-                                                       io_paradigm_flags=otf2.IoParadigmFlag.NONE)
+        if "mpi" in stats["paradigms"]:
+            paradigms["mpi"] = trace.definitions.io_paradigm(identification="MPI",
+                                                             name="MPI I/0",
+                                                             io_paradigm_class=otf2.IoParadigmClass.PARALLEL,
+                                                             io_paradigm_flags=otf2.IoParadigmFlag.NONE)
 
-        paradigm_mpi = trace.definitions.io_paradigm(identification="MPI",
-                                                     name="MPI I/O",
-                                                     io_paradigm_class=otf2.IoParadigmClass.PARALLEL,
-                                                     io_paradigm_flags=otf2.IoParadigmFlag.NONE)
-
-        paradigms = {"posix": paradigm_posix, "mpi": paradigm_mpi}
-
-        # define regions (source_file is only used so function group is not unknown)
-
-        functions = {("posix", "read"): trace.definitions.region("posix_read",
-                                                                 source_file="POSIX I/O",
-                                                                 region_role=otf2.RegionRole.FILE_IO),
-                     ("posix", "write"): trace.definitions.region("posix_write",
-                                                                  source_file="POSIX I/O",
-                                                                  region_role=otf2.RegionRole.FILE_IO),
-                     ("mpi", "read"): trace.definitions.region("mpi_read",
-                                                               source_file="MPI I/O",
+        regions = {("posix", "read"): trace.definitions.region("posix_read",
+                                                               source_file="POSIX I/O",
                                                                region_role=otf2.RegionRole.FILE_IO),
-                     ("mpi", "write"): trace.definitions.region("mpi_write",
-                                                                source_file="MPI I/O",
-                                                                region_role=otf2.RegionRole.FILE_IO)}
+                   ("posix", "write"): trace.definitions.region("posix_write",
+                                                                source_file="POSIX I/O",
+                                                                region_role=otf2.RegionRole.FILE_IO),
 
-        # create file handles
+                   ("mpi", "read"): trace.definitions.region("mpi_read",
+                                                             source_file="MPI I/O",
+                                                             region_role=otf2.RegionRole.FILE_IO),
+                   ("mpi", "write"): trace.definitions.region("mpi_write",
+                                                              source_file="MPI I/O",
+                                                              region_role=otf2.RegionRole.FILE_IO)}
+
+        io_files = {file_id: trace.definitions.io_regular_file(file_atr["name"],
+                                                               scope=system_tree_nodes.get(file_atr["hostname"])) for
+                    file_id, file_atr in stats["files"].items() if
+                    file_atr["name"] not in ["<STDIN>", "<STDOUT>", "<STDERR>"]}
+
         io_handles = {}
-        for file_id, file_name in dict(report.name_records).items():
-            if file_name in ["<STDIN>", "<STDOUT>", "<STDERR>"]:
-                io_file = None
-                handle_name = file_name
-                handle_flag = otf2.definitions.enums.IoHandleFlag.NONE
+        for file_id, file_atr in stats["files"].items():
+            if file_atr["name"] in ["<STDIN>", "<STDOUT>", "<STDERR>"]:
+                handle_name = file_atr["name"]
+                handle_flag = otf2.definitions.enums.IoHandleFlag.PRE_CREATED
             else:
-                io_file = trace.definitions.io_regular_file(file_name, scope=system_tree_node)
                 handle_name = ""
-                # should all handles be made pre-created ?
-                handle_flag = otf2.IoHandleFlag.PRE_CREATED
+                handle_flag = otf2.IoHandleFlag.NONE
 
-            # create a different handle per paradigm
-            for paradigm in ["posix", "mpi"]:
-                io_handle = trace.definitions.io_handle(file=io_file,
-                                                        name=handle_name,
-                                                        io_paradigm=paradigms.get(paradigm),
-                                                        io_handle_flags=handle_flag)
+            for paradigm in stats["paradigms"]:
+                io_handles[(paradigm, file_id)] = trace.definitions.io_handle(file=io_files.get(file_id),
+                                                                              name=handle_name,
+                                                                              io_paradigm=paradigms.get(paradigm),
+                                                                              io_handle_flags=handle_flag)
 
-                io_handles.update({(paradigm, file_id): io_handle})
+        location_groups = {f"rank {rank_id}": trace.definitions.location_group(f"rank {rank_id}", system_tree_parent=system_tree_nodes.get(rank_atr["hostname"])) for rank_id, rank_atr in stats["ranks"].items()}
+        locations = {f"rank {rank_id}": trace.definitions.location("Master Thread", group=location_groups.get(f"rank {rank_id}")) for rank_id in stats["ranks"].keys()}
 
-        location_groups = {"posix": trace.definitions.location_group("POSIX",
-                                                                     system_tree_parent=system_tree_node),
-                           "mpi": trace.definitions.location_group("MPI",
-                                                                   system_tree_parent=system_tree_node)}
-    return functions, io_handles, location_groups
+        for rank_id, rank_stats in stats["ranks"].items():
+            events = rank_stats["read_events"] + rank_stats["write_events"]
+            events.sort(key=lambda x: x.start_time)
 
+            writer = trace.event_writer(f"rank {rank_id}", group=location_groups.get(f"rank {rank_id}"))
 
-def write_events(fp_tmp, fp_out, timer_res, report, functions, io_handles, location_groups):
+            for event in events:
+                io_mode = otf2.IoOperationMode.WRITE if event.action == "write" else otf2.IoOperationMode.READ
 
-    locations = {}
+                writer.enter(event.get_start_time_ticks(timer_res),
+                             regions.get((event.paradigm, event.action)))
 
-    with otf2.reader.open(fp_tmp) as tmp_trace:
-        with otf2.writer.open(fp_out, definitions=tmp_trace.definitions) as trace:
+                writer.io_operation_begin(time=event.get_start_time_ticks(timer_res),
+                                          handle=io_handles.get((event.paradigm, event.file_id)),
+                                          mode=io_mode,
+                                          operation_flags=otf2.IoOperationFlag.NONE,
+                                          bytes_request=event.size,
+                                          matching_id=0)
 
-            for section, paradigm in [("DXT_POSIX", "posix"), ("DXT_MPIIO", "mpi")]:
+                writer.io_operation_complete(time=event.get_end_time_ticks(timer_res),
+                                             handle=io_handles.get((event.paradigm, event.file_id)),
+                                             bytes_result=event.size,
+                                             matching_id=0)
 
-                i = 0
-                for batch in report.records[section]:
-                    if i > 10:
-                        break
-                    i += 1
-                    events = []
-
-                    # specifies file the process is working on
-                    file_id = batch["id"]
-                    # rank is a process in the program traced, treat as location group for now
-                    rank = batch["rank"]
-
-                    # creates a location for each rank in the respecting location group (paradigm)
-                    location = trace.definitions.location(f"{paradigm}_rank {rank}", group=location_groups.get(paradigm))
-                    locations.update({rank: location})
-
-                    # gather events
-                    for item in batch["write_segments"]:
-                        events.append(Event.get_event_from_dict(f"write", item, paradigm, file_id))
-                    for item in batch["read_segments"]:
-                        events.append(Event.get_event_from_dict(f"read", item, paradigm, file_id))
-
-                    # sorting events within a batch is fine because no operations overlap
-                    events.sort(key=lambda x: x.start_time)
-
-                    writer = trace.event_writer(f"{paradigm}_rank {rank}", group=location_groups.get(paradigm))
-
-                    # write events
-
-                    for event in events:
-                        io_mode = otf2.IoOperationMode.WRITE if event.action == "write" else otf2.IoOperationMode.READ
-
-                        writer.enter(event.get_start_time_ticks(timer_res),
-                                     functions.get((paradigm, event.action)))
-
-                        writer.io_operation_begin(time=event.get_start_time_ticks(timer_res),
-                                                  handle=io_handles.get((paradigm, event.file_id)),
-                                                  mode=io_mode,
-                                                  operation_flags=otf2.IoOperationFlag.NONE,
-                                                  bytes_request=event.size,
-                                                  matching_id=0)
-
-                        writer.io_operation_complete(time=event.get_end_time_ticks(timer_res),
-                                                     handle=io_handles.get((paradigm, event.file_id)),
-                                                     bytes_result=event.size,
-                                                     matching_id=0)
-
-                        writer.leave(event.get_end_time_ticks(timer_res),
-                                     functions.get((paradigm, event.action)))
+                writer.leave(event.get_end_time_ticks(timer_res),
+                             regions.get((event.paradigm, event.action)))
 
 
 def main():
@@ -145,11 +104,8 @@ def main():
     if os.path.isdir(fp_out):
         subprocess.run(["rm", "-rf", fp_out])
 
-    report = darshan.DarshanReport(args.file, read_all=True, dtype="numpy")
-
-    functions, io_handles, location_groups = write_definitions("./tmp", timer_res, report)
-    write_events("./tmp/traces.otf2", fp_out, timer_res, report, functions, io_handles, location_groups)
-    subprocess.run(["rm", "-rf", "./tmp"])
+    stats = gather_stats_from_darshan(args.file)
+    write_oft2_trace(fp_out, timer_res, stats)
 
 
 if __name__ == '__main__':
