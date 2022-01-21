@@ -6,6 +6,7 @@
 | ------- | ---- | ------- |
 |filepath | /beegfs/.global0/old/ws/soeste-ior/datafiles/2021.12.02-22.10.19/ior-easy| /beegfs/global0/ws/soeste-ior/datafiles/2021.12.02-22.10.19/ior-easy |
 | num io ops | 7.564.309 | 3.629.728 | 
+| num io ops per process | 227.308 | 113.429 - 111.268 |
 | size | 6.937 TiB | 6.923 TiB |
 | time | 9.036,087 s | 9.492,34 s |
 | invocations | 3.822.564 | 3.629.728 |
@@ -55,3 +56,4 @@
 | system tree node domains | 5 | 0 |
 | system tree node props | 1 | 0 |
 | system tree nodes | 5 | 5 |
+| io op begin per relevant file | 113653 | 113429 |
