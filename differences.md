@@ -57,3 +57,23 @@
 | system tree node props | 1 | 0 |
 | system tree nodes | 5 | 5 |
 | io op begin per relevant file | 113653 | 113429 |
+
+
+## only relevant files
+| subject | native otf2 | converted from darshan |
+|----|----|----|
+| time | 9.036,087 s | 9.492,34 s |
+| num io ops |7.273.858 | 3.629.728 | 
+| io ops per process | 32x 227.308, 1x 2 | 113.429 x 32 |
+| files with io | 33 = 32 + 1x stonewall file | 32 |
+| aggregated transaction size | 32x 221.979 GiB | 32x 221.541 GiB |
+| aggregated transaction time (s) | from 291.34 to 274.297 | from 314.664 to 277.887 | 
+| io transaction size | 1.023,991 KiB | 2 MiB |
+| max transaction size | 2 Mib, (0 Mibs stonewall file) | 2 Mib |
+| min transaction size | 0 Mibs | 2 Mibs |
+| avg transaction time | from 1,282 ms to 1,207, (513,02 us stonewall file) | 16x ~2,76 ms, 16x ~2,45 ms |
+| min transaction time | ~ 1,3 us, (247,34 us stonewall file) | from 883,102 us to 755,787 |
+| max transaction time | 3x ~ 20 s, 1x ~7,5 s 12x from 0,879 s to 0,181 s, (778,701 us stonewall file) | 2x 0,527 s, 2x 0,351 s, 12x from 0,179 s to 7,583 ms |
+| avg io bandwidth | from 828,626 Mibs to 780,197 Mibs | 16x ~812 Mibs, 16x ~722 Mibs |
+| max io bandwidth | from 2,728 Gibs to 2,405 Gibs | from 2,584 Gibs to 2,212 Gibs |
+| min io bandwidth | 32x 0 | from 263,742 Mibs to 3,792 Mibs |
