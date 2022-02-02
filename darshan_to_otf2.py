@@ -13,6 +13,12 @@ def write_oft2_trace(fp_output, timer_res, stats):
         system_tree_nodes = {name: trace.definitions.system_tree_node(name, parent=root_node) for name in stats["hostnames"]}
         paradigms = {}
 
+        # might break if empty report
+        counter_keys = stats["counter_keys"]
+        metric_members = {key: trace.definitions.metric_member(name=key, metric_mode=otf2.MetricMode.ABSOLUTE_LAST) for key in counter_keys}
+        metric_classes = {key: trace.definitions.metric_class(members=(metric_members.get(key),)) for key in counter_keys}
+        metric_instances = {}
+
         if "posix" in stats["paradigms"]:
             paradigms["posix"] = trace.definitions.io_paradigm(identification="POSIX",
                                                                name="POSIX I/O",
@@ -68,7 +74,7 @@ def write_oft2_trace(fp_output, timer_res, stats):
 
             #writer = trace.event_writer(f"Master Thread", group=locations.get(f"rank {rank_id}"))
             writer = trace.event_writer_from_location(locations.get(f"rank {rank_id}"))
-
+            t_last = 0
             for event in events:
                 io_mode = otf2.IoOperationMode.WRITE if event.action == "write" else otf2.IoOperationMode.READ
 
@@ -89,6 +95,27 @@ def write_oft2_trace(fp_output, timer_res, stats):
 
                 writer.leave(event.get_end_time_ticks(timer_res),
                              regions.get((event.paradigm, event.action)))
+
+                t_last = event.get_end_time_ticks(timer_res)
+
+            # metrics
+
+            for k, v in rank_stats["count_dict"].items():
+
+                location = locations.get(f"rank {rank_id}")
+
+                if v == 0:
+                    continue
+                if metric_instances.get((metric_classes.get(k), location)) is None:
+
+                    metric_instance = trace.definitions.metric_instance(metric_class=metric_classes.get(k),
+                                                                        recorder=location, scope=location)
+                    metric_instances[(metric_classes.get(k), location)] = metric_instance
+
+                metric_instance = metric_instances[(metric_classes.get(k), location)]
+
+                writer.metric(time=t_last, metric=metric_instance, values=v)
+                t_last += 1
 
 
 def main():
