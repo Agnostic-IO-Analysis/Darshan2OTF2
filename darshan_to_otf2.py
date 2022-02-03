@@ -75,28 +75,30 @@ def write_oft2_trace(fp_output, timer_res, stats):
             #writer = trace.event_writer(f"Master Thread", group=locations.get(f"rank {rank_id}"))
             writer = trace.event_writer_from_location(locations.get(f"rank {rank_id}"))
             t_last = 0
+            if len(events) > 0:
+                t_start = events[0].get_start_time_ticks(timer_res)
             for event in events:
                 io_mode = otf2.IoOperationMode.WRITE if event.action == "write" else otf2.IoOperationMode.READ
 
-                writer.enter(event.get_start_time_ticks(timer_res),
+                writer.enter(event.get_start_time_ticks(timer_res)-t_start,
                              regions.get((event.paradigm, event.action)))
 
-                writer.io_operation_begin(time=event.get_start_time_ticks(timer_res),
+                writer.io_operation_begin(time=event.get_start_time_ticks(timer_res)-t_start,
                                           handle=io_handles.get((event.paradigm, event.file_id)),
                                           mode=io_mode,
                                           operation_flags=otf2.IoOperationFlag.NONE,
                                           bytes_request=event.size,
                                           matching_id=0)
 
-                writer.io_operation_complete(time=event.get_end_time_ticks(timer_res),
+                writer.io_operation_complete(time=event.get_end_time_ticks(timer_res)-t_start,
                                              handle=io_handles.get((event.paradigm, event.file_id)),
                                              bytes_result=event.size,
                                              matching_id=0)
 
-                writer.leave(event.get_end_time_ticks(timer_res),
+                writer.leave(event.get_end_time_ticks(timer_res)-t_start,
                              regions.get((event.paradigm, event.action)))
 
-                t_last = event.get_end_time_ticks(timer_res)
+                t_last = event.get_end_time_ticks(timer_res)-t_start
 
             # metrics
 
