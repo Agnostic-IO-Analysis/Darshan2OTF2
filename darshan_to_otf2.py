@@ -2,7 +2,8 @@ import otf2
 import argparse
 import subprocess
 import os
-from util import gather_stats_from_darshan
+
+import util
 
 
 def write_oft2_trace(fp_output, timer_res, stats):
@@ -10,22 +11,22 @@ def write_oft2_trace(fp_output, timer_res, stats):
     with otf2.writer.open(fp_output, timer_resolution=timer_res) as trace:
 
         root_node = trace.definitions.system_tree_node(stats["job"]["root_node"])
-        system_tree_nodes = {name: trace.definitions.system_tree_node(name, parent=root_node) for name in stats["hostnames"]}
+        system_tree_nodes = {name: trace.definitions.system_tree_node(name, parent=root_node) for name in util.get_hostnames(stats)}
         paradigms = {}
 
         # might break if empty report
-        counter_keys = stats["counter_keys"]
+        counter_keys = util.get_counter_keys(stats)
         metric_members = {key: trace.definitions.metric_member(name=key, metric_mode=otf2.MetricMode.ABSOLUTE_LAST) for key in counter_keys}
         metric_classes = {key: trace.definitions.metric_class(members=(metric_members.get(key),)) for key in counter_keys}
         metric_instances = {}
 
-        if "posix" in stats["paradigms"]:
+        if "posix" in stats["paradigms"].keys():
             paradigms["posix"] = trace.definitions.io_paradigm(identification="POSIX",
                                                                name="POSIX I/O",
                                                                io_paradigm_class=otf2.IoParadigmClass.SERIAL,
                                                                io_paradigm_flags=otf2.IoParadigmFlag.NONE)
 
-        if "mpi" in stats["paradigms"]:
+        if "mpi" in stats["paradigms"].keys():
             paradigms["mpi"] = trace.definitions.io_paradigm(identification="MPI",
                                                              name="MPI I/0",
                                                              io_paradigm_class=otf2.IoParadigmClass.PARALLEL,
@@ -45,15 +46,17 @@ def write_oft2_trace(fp_output, timer_res, stats):
                                                               source_file="MPI I/O",
                                                               region_role=otf2.RegionRole.FILE_IO)}
 
-        io_files = {file_id: trace.definitions.io_regular_file(file_atr["name"],
-                                                               scope=system_tree_nodes.get(file_atr["hostname"])) for
-                    file_id, file_atr in stats["files"].items() if
-                    file_atr["name"] not in ["<STDIN>", "<STDOUT>", "<STDERR>"]}
+        files = util.get_files(stats)
+
+        io_files = {file_id: trace.definitions.io_regular_file(file_name,
+                                                               scope=system_tree_nodes.get(file_hostname)) for
+                    file_id, file_name, file_hostname in files if
+                    file_name not in ["<STDIN>", "<STDOUT>", "<STDERR>"]}
 
         io_handles = {}
-        for file_id, file_atr in stats["files"].items():
-            if file_atr["name"] in ["<STDIN>", "<STDOUT>", "<STDERR>"]:
-                handle_name = file_atr["name"]
+        for file_id, file_name, file_hostname in files:
+            if file_name in ["<STDIN>", "<STDOUT>", "<STDERR>"]:
+                handle_name = file_name
                 handle_flag = otf2.definitions.enums.IoHandleFlag.PRE_CREATED
             else:
                 handle_name = ""
@@ -64,60 +67,67 @@ def write_oft2_trace(fp_output, timer_res, stats):
                                                                               name=handle_name,
                                                                               io_paradigm=paradigms.get(paradigm),
                                                                               io_handle_flags=handle_flag)
+        ranks_hostnames = util.get_ranks_hostnames(stats)
+        location_groups = {f"rank {rank_id}": trace.definitions.location_group(f"rank {rank_id}", system_tree_parent=system_tree_nodes.get(rank_hostname)) for rank_id, rank_hostname in ranks_hostnames}
+        locations = {f"rank {rank_id}": trace.definitions.location("Master Thread", group=location_groups.get(f"rank {rank_id}")) for rank_id in [item[0] for item in ranks_hostnames]}
 
-        location_groups = {f"rank {rank_id}": trace.definitions.location_group(f"rank {rank_id}", system_tree_parent=system_tree_nodes.get(rank_atr["hostname"])) for rank_id, rank_atr in stats["ranks"].items()}
-        locations = {f"rank {rank_id}": trace.definitions.location("Master Thread", group=location_groups.get(f"rank {rank_id}")) for rank_id in stats["ranks"].keys()}
+        #for rank_id, rank_stats in stats["ranks"].items():
 
-        for rank_id, rank_stats in stats["ranks"].items():
-            events = rank_stats["read_events"] + rank_stats["write_events"]
-            events.sort(key=lambda x: x.start_time)
+        for paradigm in stats["paradigms"]:
+            for file_id, file_name in stats["paradigms"][paradigm]["files"]:
+                element = stats["paradigms"][paradigm]["files"][(file_id, file_name)]
 
-            #writer = trace.event_writer(f"Master Thread", group=locations.get(f"rank {rank_id}"))
-            writer = trace.event_writer_from_location(locations.get(f"rank {rank_id}"))
-            t_last = 0
-            if len(events) > 0:
-                t_start = events[0].get_start_time_ticks(timer_res)
-            for event in events:
-                io_mode = otf2.IoOperationMode.WRITE if event.action == "write" else otf2.IoOperationMode.READ
+                events = element["read_events"] + element["write_events"]
+                events.sort(key=lambda x: x.start_time)
 
-                writer.enter(event.get_start_time_ticks(timer_res)-t_start,
-                             regions.get((event.paradigm, event.action)))
+                #writer = trace.event_writer(f"Master Thread", group=locations.get(f"rank {rank_id}"))
+                writer = trace.event_writer_from_location(locations.get(f"rank {element['rank']}"))
+                t_last = 0
+                if len(events) > 0:
+                    t_start = events[0].get_start_time_ticks(timer_res)
+                for event in events:
+                    io_mode = otf2.IoOperationMode.WRITE if event.action == "write" else otf2.IoOperationMode.READ
 
-                writer.io_operation_begin(time=event.get_start_time_ticks(timer_res)-t_start,
-                                          handle=io_handles.get((event.paradigm, event.file_id)),
-                                          mode=io_mode,
-                                          operation_flags=otf2.IoOperationFlag.NONE,
-                                          bytes_request=event.size,
-                                          matching_id=0)
+                    writer.enter(event.get_start_time_ticks(timer_res)-t_start,
+                                 regions.get((event.paradigm, event.action)))
 
-                writer.io_operation_complete(time=event.get_end_time_ticks(timer_res)-t_start,
-                                             handle=io_handles.get((event.paradigm, event.file_id)),
-                                             bytes_result=event.size,
-                                             matching_id=0)
+                    writer.io_operation_begin(time=event.get_start_time_ticks(timer_res)-t_start,
+                                              handle=io_handles.get((event.paradigm, event.file_id)),
+                                              mode=io_mode,
+                                              operation_flags=otf2.IoOperationFlag.NONE,
+                                              bytes_request=event.size,
+                                              matching_id=0)
 
-                writer.leave(event.get_end_time_ticks(timer_res)-t_start,
-                             regions.get((event.paradigm, event.action)))
+                    writer.io_operation_complete(time=event.get_end_time_ticks(timer_res)-t_start,
+                                                 handle=io_handles.get((event.paradigm, event.file_id)),
+                                                 bytes_result=event.size,
+                                                 matching_id=0)
 
-                t_last = event.get_end_time_ticks(timer_res)-t_start
+                    writer.leave(event.get_end_time_ticks(timer_res)-t_start,
+                                 regions.get((event.paradigm, event.action)))
 
-            # metrics
+                    t_last = event.get_end_time_ticks(timer_res)-t_start
 
-            for k, v in rank_stats["count_dict"].items():
+                # metrics
 
-                location = locations.get(f"rank {rank_id}")
+                for k, v in element["counters"].items():
 
-                if v == 0:
-                    continue
-                if metric_instances.get((metric_classes.get(k), location)) is None:
+                    location = locations.get(f"rank {element['rank']}")
 
-                    metric_instance = trace.definitions.metric_instance(metric_class=metric_classes.get(k),
-                                                                        recorder=location, scope=location)
-                    metric_instances[(metric_classes.get(k), location)] = metric_instance
+                    if v == 0:
+                        continue
+                    if metric_instances.get((metric_classes.get(k), location)) is None:
 
-                metric_instance = metric_instances[(metric_classes.get(k), location)]
+                        metric_instance = trace.definitions.metric_instance(metric_class=metric_classes.get(k),
+                                                                            recorder=location, scope=location)
+                        metric_instances[(metric_classes.get(k), location)] = metric_instance
 
-                writer.metric(time=t_last, metric=metric_instance, values=v)
-                t_last += 1
+                    metric_instance = metric_instances[(metric_classes.get(k), location)]
+                    try:
+                        writer.metric(time=t_last, metric=metric_instance, values=v)
+                    except:
+                        print(v)
+                    t_last += 1
 
 
 def main():
@@ -134,7 +144,7 @@ def main():
     if os.path.isdir(fp_out):
         subprocess.run(["rm", "-rf", fp_out])
 
-    stats = gather_stats_from_darshan(args.file)
+    stats = util.gather_stats_from_darshan(args.file)
     write_oft2_trace(fp_out, timer_res, stats)
 
 
