@@ -1,3 +1,5 @@
+#! /usr/bin/env python3
+
 import otf2
 import argparse
 import subprocess
