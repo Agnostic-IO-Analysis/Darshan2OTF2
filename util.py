@@ -2,80 +2,46 @@ import darshan
 from event import Event
 
 
-def gather_stats_from_darshan(fp):
-    stats = {"paradigms": {}}
+def get_stats_from_darshan(fp):
 
     report = darshan.DarshanReport(fp, read_all=True, dtype="dict")
 
-    keys = []
-    if "DXT_POSIX" in report.records.keys():
-        keys.append(("DXT_POSIX", "POSIX", "posix"))
-        stats["paradigms"]["posix"] = {"files": {}}
-    if "DXT_MPIIO" in report.records.keys():
-        keys.append(("DXT_MPIIO", "MPI-IO", "mpi"))
-        stats["paradigms"]["mpi"] = {"files": {}}
+    name_records = report.name_records
+    events = []
+    definitions = {"paradigms": set(), "file_loc_host": set()}
+    counters = {"data": {}, "keys": set()}
 
-    stats["paradigms"]["std"] = {"files": {}}
-    for section, csection, paradigm in keys:
-        for batch, cbatch in zip(report.records[section], report.records[csection]):
-            stats["paradigms"][paradigm]["files"][(batch["id"], report.name_records[batch["id"]])] = {
-                "read_events": [Event("read", *elements.values(), paradigm, batch["id"]) for elements in
-                                batch["read_segments"]],
-                "write_events": [Event("write", *elements.values(), paradigm, batch["id"]) for elements in
-                                 batch["write_segments"]],
-                "counters": cbatch["counters"],
-                "hostname": batch["hostname"],
-                "rank": batch["rank"],
-            }
+    for section, paradigm in [("DXT_POSIX", "posix"), ("DXT_MPIIO", "mpi")]:
+        try:
+            definitions["paradigms"].add(paradigm)
+            for batch in report.records[section]:
+                hostname = batch["hostname"]
+                location = batch["rank"]
+                file_id = batch["id"]
+                file_name = name_records[file_id]
 
-    for cbatch in report.records["STDIO"]:
-        stats["paradigms"]["std"]["files"][(cbatch["id"], report.name_records[cbatch["id"]])] = {
-            "read_events": [],
-            "write_events": [],
-            "counters": cbatch["counters"],
-            "hostname": "undefined",
-            "rank": cbatch["rank"],
-        }
+                definitions["file_loc_host"].add((file_name, location, hostname))
 
-    job_data = report.data["metadata"]["job"]
-    stats["job"] = {
-        "start": job_data["start_time"],
-        "end": job_data["end_time"],
-        "nprocs": job_data["nprocs"],
-        "root_node": job_data["metadata"]["h"]}
+                events += [Event("write", *event.values(), paradigm, file_name=file_name, location=location,
+                                 hostname=hostname) for event in batch["write_segments"]]
+                events += [Event("read", *event.values(), paradigm, file_name=file_name, location=location,
+                                 hostname=hostname) for event in batch["read_segments"]]
+        except KeyError as e:
+            print(e)
 
-    return stats
+    definitions["files"] = set(item for item, _, _ in definitions["file_loc_host"])
+    definitions["locations"] = set(item for _, item, _ in definitions["file_loc_host"])
+    definitions["hostnames"] = set(item for _, _, item in definitions["file_loc_host"])
 
+    for section, paradigm in [("POSIX", "posix"), ("MPIIO", "mpi")]:
+        try:
+            for batch in report.records[section]:
+                counters["data"][(name_records[batch["id"]], batch["rank"])] = batch["counters"]
+                counters["data"][(name_records[batch["id"]], batch["rank"])].update(batch["fcounters"])
+                counters["keys"] |= batch["counters"].keys()
+                counters["keys"] |= batch["fcounters"].keys()
 
-def get_hostnames(stats):
-    hostnames = set()
-    for paradigm in stats["paradigms"]:
-        for file_id, file_name in stats["paradigms"][paradigm]["files"]:
-            hostnames.add(stats["paradigms"][paradigm]["files"][(file_id, file_name)]["hostname"])
-    return hostnames
+        except KeyError as e:
+            print(e)
 
-
-def get_counter_keys(stats):
-    counter_keys = set()
-    for paradigm in stats["paradigms"]:
-        for file_id, file_name in stats["paradigms"][paradigm]["files"]:
-            for k in stats["paradigms"][paradigm]["files"][(file_id, file_name)]["counters"].keys():
-                counter_keys.add(k)
-    return counter_keys
-
-
-def get_files(stats):
-    # (file_id, file_name, hostname)
-    files = set()
-    for paradigm in stats["paradigms"]:
-        for file_id, file_name in stats["paradigms"][paradigm]["files"]:
-            files.add((file_id, file_name, stats["paradigms"][paradigm]["files"][(file_id, file_name)]["hostname"]))
-    return files
-
-
-def get_ranks_hostnames(stats):
-    ranks = set()
-    for paradigm in stats["paradigms"]:
-        for file_id, file_name in stats["paradigms"][paradigm]["files"]:
-            ranks.add((stats["paradigms"][paradigm]["files"][(file_id, file_name)]["rank"], stats["paradigms"][paradigm]["files"][(file_id, file_name)]["hostname"]))
-    return ranks
+    return events, definitions, counters
