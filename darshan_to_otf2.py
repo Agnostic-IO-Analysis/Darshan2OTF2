@@ -115,7 +115,11 @@ def write_oft2_trace(fp_in, fp_output, timer_res):
 
         for (file_name, location), counters in counters["data"].items():
 
+            lid = location
             location = locations.get(f"rank {location}")
+            if location is None:
+                print(f"location {lid} not found")
+                continue
 
             for counter_key, counter_value in counters.items():
                 if counter_value > 0:
@@ -126,7 +130,6 @@ def write_oft2_trace(fp_in, fp_output, timer_res):
                         metric_classes.update({counter_key: metric_class})
 
                     if metric_instances.get((metric_classes.get(counter_key), location)) is None:
-
                         metric_instance = trace.definitions.metric_instance(metric_class=metric_classes.get(counter_key),
                                                                             recorder=location, scope=location)
                         metric_instances[(metric_classes.get(counter_key), location)] = metric_instance
