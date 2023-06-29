@@ -7,8 +7,7 @@ import os
 
 import util
 
-
-def write_oft2_trace(fp_in, fp_output, timer_res):
+def write_otf2_trace(fp_in, fp_output, timer_res):
 
     with otf2.writer.open(fp_output, timer_resolution=timer_res) as trace:
 
@@ -43,6 +42,8 @@ def write_oft2_trace(fp_in, fp_output, timer_res):
                                                               source_file="MPI I/O",
                                                               region_role=otf2.RegionRole.FILE_IO)}
 
+        
+        print(paradigms)
         # we always take the first file hostname if there are multiple, should this be like that ?
 
         io_files = {}
@@ -80,55 +81,66 @@ def write_oft2_trace(fp_in, fp_output, timer_res):
         events.sort(key=lambda x: x.start_time)
         t_last = 0
         if len(events) > 0:
+            print(events[0].location)
             t_start = events[0].get_start_time_ticks(timer_res)
+            print(t_start)
+        
         for event in events:
             #writer = trace.event_writer(f"Master Thread", group=locations.get(f"rank {rank_id}"))
             writer = trace.event_writer_from_location(locations.get(f"rank {event.location}"))
 
             io_mode = otf2.IoOperationMode.WRITE if event.action == "write" else otf2.IoOperationMode.READ
 
-            writer.enter(event.get_start_time_ticks(timer_res)-t_start,
-                         regions.get((event.paradigm, event.action)))
+            start_time = event.get_start_time_ticks(timer_res)-t_start
+            end_time = event.get_end_time_ticks(timer_res)-t_start
+            
+            #if there's mpi and posix paradigm, split the location into master and thread under the 
+            if event.paradigm == "posix":
+                writer.enter(start_time, regions.get((event.paradigm, event.action)))
 
-            writer.io_operation_begin(time=event.get_start_time_ticks(timer_res)-t_start,
-                                      handle=io_handles.get((event.paradigm, event.file_name)),
-                                      mode=io_mode,
-                                      operation_flags=otf2.IoOperationFlag.NONE,
-                                      bytes_request=event.size,
-                                      matching_id=0)
+                writer.io_operation_begin(time=start_time,
+                                          handle=io_handles.get((event.paradigm, event.file_name)),
+                                          mode=io_mode,
+                                          operation_flags=otf2.IoOperationFlag.NONE,
+                                          bytes_request=event.size,
+                                          matching_id=0)
 
-            writer.io_operation_complete(time=event.get_end_time_ticks(timer_res)-t_start,
-                                         handle=io_handles.get((event.paradigm, event.file_name)),
-                                         bytes_result=event.size,
-                                         matching_id=0)
+                writer.io_operation_complete(time=end_time,
+                                             handle=io_handles.get((event.paradigm, event.file_name)),
+                                             bytes_result=event.size,
+                                             matching_id=0)
 
-            writer.leave(event.get_end_time_ticks(timer_res)-t_start,
-                         regions.get((event.paradigm, event.action)))
+                writer.leave(end_time, regions.get((event.paradigm, event.action)))
+            #elif event.paradigm == "posix":
+            #    print(start_time)
 
-            t_last = event.get_end_time_ticks(timer_res)-t_start
+            t_last = end_time
+            #print(t_last)
 
         # metrics
-
         metric_members = {}
         metric_classes = {}
         metric_instances = {}
 
         for (file_name, location), counters in counters["data"].items():
 
+            lid = location
             location = locations.get(f"rank {location}")
+            if location is None:
+                print(f"location {lid} not found")
+                continue
 
             for counter_key, counter_value in counters.items():
                 if counter_value > 0:
                     if counter_key not in metric_members.keys():
                         metric_member = trace.definitions.metric_member(name=counter_key, metric_mode=otf2.MetricMode.ABSOLUTE_LAST)
+                        
                         metric_members.update({counter_key: metric_member})
                         metric_class = trace.definitions.metric_class(members=(metric_members.get(counter_key),))
                         metric_classes.update({counter_key: metric_class})
 
                     if metric_instances.get((metric_classes.get(counter_key), location)) is None:
-
-                        metric_instance = trace.definitions.metric_instance(metric_class=metric_classes.get(counter_key),
-                                                                            recorder=location, scope=location)
+                        metric_instance = trace.definitions.metric_instance(metric_class=metric_classes.get(counter_key),recorder=location, scope=location)
                         metric_instances[(metric_classes.get(counter_key), location)] = metric_instance
 
                     metric_instance = metric_instances[(metric_classes.get(counter_key), location)]
@@ -152,7 +164,7 @@ def main():
     if os.path.isdir(fp_out):
         subprocess.run(["rm", "-rf", fp_out])
 
-    write_oft2_trace(fp_in, fp_out, timer_res)
+    write_otf2_trace(fp_in, fp_out, timer_res)
 
 
 if __name__ == '__main__':
