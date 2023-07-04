@@ -1,6 +1,5 @@
 import math
 
-
 class Event:
 
     def __init__(self, action, offset, size, start_time, end_time, paradigm, file_name, location, hostname):
@@ -21,7 +20,7 @@ class Event:
     def __repr__(self):
         return f"{self.file_name} ({self.paradigm}_{self.action}): time: [{self.start_time} - {self.end_time}], " \
                f"offset: {self.offset}, size: {self.size}"
-
+    
     def get_start_time_ticks(self, timer_resolution):
         return math.ceil(self.start_time*timer_resolution)
 
