@@ -4,8 +4,10 @@ import otf2
 import argparse
 import subprocess
 import os
+import copy
 
 import util
+from event import Event
 
 def write_otf2_trace(fp_in, fp_output, timer_res):
 
@@ -42,10 +44,6 @@ def write_otf2_trace(fp_in, fp_output, timer_res):
                                                               source_file="MPI I/O",
                                                               region_role=otf2.RegionRole.FILE_IO)}
 
-        
-        print(paradigms)
-        # we always take the first file hostname if there are multiple, should this be like that ?
-
         io_files = {}
 
         skip = ["<STDIN>", "<STDOUT>", "<STDERR>"]
@@ -81,42 +79,125 @@ def write_otf2_trace(fp_in, fp_output, timer_res):
         events.sort(key=lambda x: x.start_time)
         t_last = 0
         if len(events) > 0:
-            print(events[0].location)
             t_start = events[0].get_start_time_ticks(timer_res)
-            print(t_start)
+
         
-        for event in events:
-            #writer = trace.event_writer(f"Master Thread", group=locations.get(f"rank {rank_id}"))
+        modifiedEvents = []
+        trackerEndTime = {}
+        
+        for event in events:            
+            if event.location in trackerEndTime: 
+                tracked_end_time = trackerEndTime[event.location][0]
+                tracked_key = trackerEndTime[event.location][1]
+                
+                if tracked_end_time > event.start_time:
+                    modifiedEvents.append(Event(event.action, 
+                        event.offset, 
+                        event.size, 
+                        event.start_time, 
+                        event.end_time, 
+                        event.paradigm, 
+                        event.file_name, 
+                        event.location, 
+                        event.hostname))
+                    
+                    modifiedEvents.append(Event(modifiedEvents[tracked_key].action, 
+                        modifiedEvents[tracked_key].offset, 
+                        modifiedEvents[tracked_key].size, 
+                        event.end_time, 
+                        modifiedEvents[tracked_key].end_time, 
+                        modifiedEvents[tracked_key].paradigm,
+                        modifiedEvents[tracked_key].file_name, 
+                        modifiedEvents[tracked_key].location, 
+                        modifiedEvents[tracked_key].hostname))
+                    trackerEndTime[event.location] = [modifiedEvents[tracked_key].end_time, len(modifiedEvents) - 1]
+                    modifiedEvents[tracked_key].end_time = event.start_time
+                    
+                    test = modifiedEvents[-1]
+                    start_time = test.get_start_time_ticks(timer_res)-t_start
+                    end_time = test.get_end_time_ticks(timer_res)-t_start
+                    #print(trackerEndTime)
+                    #print("SPLITTED : ", test.paradigm, " - ", test.location, " - ", start_time, " - ", end_time)
+                else: 
+                    modifiedEvents.append(Event(event.action, 
+                        event.offset, 
+                        event.size, 
+                        event.start_time, 
+                        event.end_time, 
+                        event.paradigm, 
+                        event.file_name, 
+                        event.location, 
+                        event.hostname))
+                    trackerEndTime[event.location] = [event.end_time, len(modifiedEvents) - 1]
+            else:
+                modifiedEvents.append(Event(event.action, 
+                    event.offset, 
+                    event.size, 
+                    event.start_time, 
+                    event.end_time, 
+                    event.paradigm, 
+                    event.file_name, 
+                    event.location, 
+                    event.hostname))
+                trackerEndTime[event.location] = [event.end_time, len(modifiedEvents) - 1]
+                
+        #print("printing out MODIFIED EVENTS")
+        #counter = 0    
+        #for event in modifiedEvents:
+        #    start_time = event.get_start_time_ticks(timer_res)-t_start
+        #    end_time = event.get_end_time_ticks(timer_res)-t_start
+        #    print(counter ," : ", event.paradigm, " - ", event.location, " - ", start_time, " - ", end_time)
+        #    counter = counter+1
+        
+        
+        print("printing out event POSIX")
+        for event in modifiedEvents:
             writer = trace.event_writer_from_location(locations.get(f"rank {event.location}"))
-
             io_mode = otf2.IoOperationMode.WRITE if event.action == "write" else otf2.IoOperationMode.READ
-
+            
             start_time = event.get_start_time_ticks(timer_res)-t_start
             end_time = event.get_end_time_ticks(timer_res)-t_start
-            
-            #if there's mpi and posix paradigm, split the location into master and thread under the 
-            if event.paradigm == "posix":
+                
+            if event.paradigm == "asdf":
+                print(event.paradigm, " - ", event.location, " - ", start_time, " - ", end_time)
                 writer.enter(start_time, regions.get((event.paradigm, event.action)))
-
+                    
                 writer.io_operation_begin(time=start_time,
-                                          handle=io_handles.get((event.paradigm, event.file_name)),
-                                          mode=io_mode,
-                                          operation_flags=otf2.IoOperationFlag.NONE,
-                                          bytes_request=event.size,
-                                          matching_id=0)
-
+                        handle=io_handles.get((event.paradigm, event.file_name)),
+                        mode=io_mode,
+                        operation_flags=otf2.IoOperationFlag.NONE,
+                        bytes_request=event.size,
+                        matching_id=0)
+                        
                 writer.io_operation_complete(time=end_time,
-                                             handle=io_handles.get((event.paradigm, event.file_name)),
-                                             bytes_result=event.size,
-                                             matching_id=0)
-
+                        handle=io_handles.get((event.paradigm, event.file_name)),
+                        bytes_result=event.size,
+                        matching_id=0)
+                    
                 writer.leave(end_time, regions.get((event.paradigm, event.action)))
-            #elif event.paradigm == "posix":
-            #    print(start_time)
-
+             
+            #print("EVERYTHING")
+            display = True    
+            if display: 
+                print(event.paradigm, " - ", event.location," - ", start_time, " - ", end_time)
+                writer.enter(start_time, regions.get((event.paradigm, event.action)))
+                    
+                writer.io_operation_begin(time=start_time,
+                        handle=io_handles.get((event.paradigm, event.file_name)),
+                        mode=io_mode,
+                        operation_flags=otf2.IoOperationFlag.NONE,
+                        bytes_request=event.size,
+                        matching_id=0)
+                        
+                writer.io_operation_complete(time=end_time,
+                        handle=io_handles.get((event.paradigm, event.file_name)),
+                        bytes_result=event.size,
+                        matching_id=0)
+                    
+                writer.leave(end_time, regions.get((event.paradigm, event.action)))
+                
             t_last = end_time
-            #print(t_last)
-
+        
         # metrics
         metric_members = {}
         metric_classes = {}
